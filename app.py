@@ -220,6 +220,11 @@ def sitemap():
 </urlset>"""
     return xml, 200, {'Content-Type': 'application/xml'}
 
+@app.route('/google-verification')
+def google_verification_check():
+    return '<meta name="google-site-verification" content="ABp0Hm9K6b12oR3G-pghgfcPdTA1Y53U68bIUHk8C1w" />', 200, {'Content-Type': 'text/html'}
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
+
 
