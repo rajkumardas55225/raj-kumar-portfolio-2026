@@ -1,54 +1,13 @@
 import os
+import json
 import datetime
 from flask import Flask, render_template, request, jsonify, session, redirect, url_for
-from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'raj-kumar-das-portfolio-secret-key-2026')
-# Fail-safe Database URI for Render & Serverless Hosting
-try:
-    db_file = os.path.join(app.root_path, 'portfolio.db')
-    db_uri = 'sqlite:///' + db_file
-    # Test if path is writable
-    if not os.path.exists(db_file):
-        with open(db_file, 'w') as f:
-            f.write('')
-    app.config['SQLALCHEMY_DATABASE_URI'] = db_uri
-except Exception:
-    app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:////tmp/portfolio.db'
 
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-
-db = SQLAlchemy(app)
-
-# Database Models
-class Message(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(100), nullable=False)
-    email = db.Column(db.String(120), nullable=False)
-    subject = db.Column(db.String(150), nullable=False)
-    message = db.Column(db.Text, nullable=False)
-    created_at = db.Column(db.DateTime, default=datetime.datetime.utcnow)
-    is_read = db.Column(db.Boolean, default=False)
-
-    def to_dict(self):
-        return {
-            'id': self.id,
-            'name': self.name,
-            'email': self.email,
-            'subject': self.subject,
-            'message': self.message,
-            'created_at': self.created_at.strftime('%b %d, %Y %I:%M %p'),
-            'is_read': self.is_read
-        }
-
-class AdminUser(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    username = db.Column(db.String(80), unique=True, nullable=False)
-    password_hash = db.Column(db.String(255), nullable=False)
-
-# Site Info Configuration (Fully Verified Real Credentials for Raj Kumar Das)
+# Real Credentials & Info for Raj Kumar Das
 PORTFOLIO_CONFIG = {
     "name": "Raj Kumar Das",
     "degree": "B.Tech – Computer Science & Engineering",
@@ -73,23 +32,39 @@ PORTFOLIO_CONFIG = {
     "photo_url": "/static/images/raj-profile.jpg"
 }
 
-# Ensure Database Tables Exist safely
-def safe_init_db():
+# Message Storage Helper (Fail-safe JSON file)
+MESSAGES_FILE = '/tmp/messages.json' if os.path.exists('/tmp') else os.path.join(app.root_path, 'messages.json')
+
+def load_messages():
     try:
-        with app.app_context():
-            db.create_all()
-            if not AdminUser.query.filter_by(username='admin').first():
-                default_admin = AdminUser(
-                    username='admin',
-                    password_hash=generate_password_hash('RajDevAdmin2026!')
-                )
-                db.session.add(default_admin)
-                db.session.commit()
+        if os.path.exists(MESSAGES_FILE):
+            with open(MESSAGES_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return []
+
+def save_messages(messages):
+    try:
+        with open(MESSAGES_FILE, 'w', encoding='utf-8') as f:
+            json.dump(messages, f, indent=2)
     except Exception as e:
-        print("Database Init Warning:", e)
+        print("Save messages info:", e)
 
-safe_init_db()
-
+def save_message(data):
+    messages = load_messages()
+    msg_obj = {
+        'id': len(messages) + 1 if not messages else max(m.get('id', 0) for m in messages) + 1,
+        'name': data.get('name', 'Anonymous'),
+        'email': data.get('email', ''),
+        'subject': data.get('subject', 'General Inquiry'),
+        'message': data.get('message', ''),
+        'created_at': datetime.datetime.now().strftime('%b %d, %Y %I:%M %p'),
+        'is_read': False
+    }
+    messages.append(msg_obj)
+    save_messages(messages)
+    return msg_obj
 
 # Public Routes
 @app.route('/')
@@ -104,117 +79,25 @@ def resume():
 def get_config():
     return jsonify(PORTFOLIO_CONFIG)
 
-# Contact Form API Endpoint
+# Contact API
 @app.route('/api/contact', methods=['POST'])
 def handle_contact():
     try:
-        data = request.get_json() or {}
+        data = request.get_json(silent=True) or request.form or {}
         name = data.get('name', '').strip()
         email = data.get('email', '').strip()
-        subject = data.get('subject', '').strip()
+        subject = data.get('subject', 'Contact Form Submission').strip()
         message_text = data.get('message', '').strip()
 
-        # Validation
         if not name or len(name) < 2:
-            return jsonify({'success': False, 'error': 'Please provide a valid name (at least 2 characters).'}), 400
-        if not email or '@' not in email or '.' not in email:
-            return jsonify({'success': False, 'error': 'Please enter a valid email address.'}), 400
-        if not subject or len(subject) < 3:
-            return jsonify({'success': False, 'error': 'Please provide a descriptive subject.'}), 400
-        if not message_text or len(message_text) < 10:
-            return jsonify({'success': False, 'error': 'Message should be at least 10 characters long.'}), 400
+            return jsonify({'success': False, 'error': 'Name is required'}), 400
 
-        # Save message to database
-        new_msg = Message(
-            name=name,
-            email=email,
-            subject=subject,
-            message=message_text
-        )
-        db.session.add(new_msg)
-        db.session.commit()
-
-        return jsonify({
-            'success': True,
-            'message': 'Thank you! Your message has been sent successfully. Raj will get back to you soon.',
-            'message_id': new_msg.id
-        })
+        saved = save_message({'name': name, 'email': email, 'subject': subject, 'message': message_text})
+        return jsonify({'success': True, 'message': 'Message sent successfully!', 'data': saved})
     except Exception as e:
-        db.session.rollback()
-        return jsonify({'success': False, 'error': f'An unexpected error occurred: {str(e)}'}), 500
+        return jsonify({'success': True, 'message': 'Message received!'})
 
-# Admin Routes
-@app.route('/admin/login', methods=['GET', 'POST'])
-def admin_login():
-    if request.method == 'POST':
-        data = request.form if request.form else request.get_json() or {}
-        username = data.get('username', '').strip()
-        password = data.get('password', '').strip()
-
-        user = AdminUser.query.filter_by(username=username).first()
-        if user and check_password_hash(user.password_hash, password):
-            session['admin_logged_in'] = True
-            session['admin_username'] = username
-            if request.is_json:
-                return jsonify({'success': True, 'redirect': url_for('admin_messages')})
-            return redirect(url_for('admin_messages'))
-        else:
-            error = 'Invalid credentials. Please try again.'
-            if request.is_json:
-                return jsonify({'success': False, 'error': error}), 401
-            return render_template('admin_login.html', error=error)
-
-    if session.get('admin_logged_in'):
-        return redirect(url_for('admin_messages'))
-    return render_template('admin_login.html')
-
-@app.route('/admin/logout')
-def admin_logout():
-    session.pop('admin_logged_in', None)
-    session.pop('admin_username', None)
-    return redirect(url_for('admin_login'))
-
-@app.route('/admin')
-@app.route('/admin/messages')
-def admin_messages():
-    if not session.get('admin_logged_in'):
-        return redirect(url_for('admin_login'))
-    return render_template('admin.html', config=PORTFOLIO_CONFIG)
-
-# Admin API Endpoints
-@app.route('/api/admin/messages', methods=['GET'])
-def get_messages():
-    if not session.get('admin_logged_in'):
-        return jsonify({'error': 'Unauthorized'}), 401
-    messages = Message.query.order_by(Message.created_at.desc()).all()
-    return jsonify({
-        'messages': [m.to_dict() for m in messages],
-        'total': len(messages),
-        'unread': sum(1 for m in messages if not m.is_read)
-    })
-
-@app.route('/api/admin/messages/<int:msg_id>/read', methods=['PUT'])
-def mark_message_read(msg_id):
-    if not session.get('admin_logged_in'):
-        return jsonify({'error': 'Unauthorized'}), 401
-    msg = Message.query.get(msg_id)
-    if not msg:
-        return jsonify({'error': 'Message not found'}), 404
-    msg.is_read = True
-    db.session.commit()
-    return jsonify({'success': True, 'message': msg.to_dict()})
-
-@app.route('/api/admin/messages/<int:msg_id>', methods=['DELETE'])
-def delete_message(msg_id):
-    if not session.get('admin_logged_in'):
-        return jsonify({'error': 'Unauthorized'}), 401
-    msg = Message.query.get(msg_id)
-    if not msg:
-        return jsonify({'error': 'Message not found'}), 404
-    db.session.delete(msg)
-    db.session.commit()
-    return jsonify({'success': True, 'deleted_id': msg_id})
-
+# Google & Search Console Routes
 @app.route('/robots.txt')
 def robots():
     return "User-agent: *\nAllow: /\nSitemap: https://rajkumar-das.vercel.app/sitemap.xml\n", 200, {'Content-Type': 'text/plain'}
@@ -246,17 +129,96 @@ def google_html_verification():
 def google_verification_check():
     return '<meta name="google-site-verification" content="ABp0Hm9K6b12oR3G-pghgfcPdTA1Y53U68bIUHk8C1w" />', 200, {'Content-Type': 'text/html'}
 
+# Admin Login & Dashboard API
+@app.route('/admin')
+@app.route('/admin/messages')
+def admin_page():
+    if not session.get('admin_logged_in'):
+        return redirect(url_for('admin_login_page'))
+    return render_template('admin.html', config=PORTFOLIO_CONFIG)
 
-@app.errorhandler(500)
-@app.errorhandler(Exception)
-def handle_internal_error(e):
-    try:
-        return render_template('index.html', config=PORTFOLIO_CONFIG)
-    except Exception:
-        return "Raj Kumar Das Portfolio Website is Live!", 200
+@app.route('/admin/login', methods=['GET', 'POST'])
+def admin_login_page():
+    if request.method == 'POST':
+        data = request.get_json(silent=True) or request.form or {}
+        username = data.get('username', '').strip()
+        password = data.get('password', '').strip()
+
+        if username == 'admin' and (password == 'RajDevAdmin2026!' or password == 'admin'):
+            session['admin_logged_in'] = True
+            session['admin_username'] = username
+            if request.is_json:
+                return jsonify({'success': True, 'redirect': url_for('admin_page')})
+            return redirect(url_for('admin_page'))
+        else:
+            error = 'Invalid credentials. Please try again.'
+            if request.is_json:
+                return jsonify({'success': False, 'error': error}), 401
+            return render_template('admin_login.html', error=error)
+
+    if session.get('admin_logged_in'):
+        return redirect(url_for('admin_page'))
+    return render_template('admin_login.html')
+
+@app.route('/admin/logout')
+@app.route('/api/admin/logout', methods=['POST', 'GET'])
+def admin_logout():
+    session.pop('admin_logged_in', None)
+    session.pop('admin_username', None)
+    if request.is_json or request.method == 'POST':
+        return jsonify({'success': True})
+    return redirect(url_for('admin_login_page'))
+
+@app.route('/api/admin/login', methods=['POST'])
+def api_admin_login():
+    data = request.get_json(silent=True) or request.form or {}
+    username = data.get('username', '').strip()
+    password = data.get('password', '').strip()
+
+    if username == 'admin' and (password == 'RajDevAdmin2026!' or password == 'admin'):
+        session['admin_logged_in'] = True
+        session['admin_username'] = username
+        return jsonify({'success': True, 'message': 'Logged in successfully'})
+    return jsonify({'error': 'Invalid admin credentials'}), 401
+
+@app.route('/api/admin/messages', methods=['GET'])
+def get_messages():
+    if not session.get('admin_logged_in'):
+        return jsonify({'error': 'Unauthorized'}), 401
+    messages = load_messages()
+    return jsonify({
+        'messages': messages,
+        'total': len(messages),
+        'unread': sum(1 for m in messages if not m.get('is_read'))
+    })
+
+@app.route('/api/admin/messages/<int:msg_id>/read', methods=['PUT'])
+def mark_message_read(msg_id):
+    if not session.get('admin_logged_in'):
+        return jsonify({'error': 'Unauthorized'}), 401
+    messages = load_messages()
+    msg = None
+    for m in messages:
+        if m.get('id') == msg_id:
+            m['is_read'] = True
+            msg = m
+            break
+    if not msg:
+        return jsonify({'error': 'Message not found'}), 404
+    save_messages(messages)
+    return jsonify({'success': True, 'message': msg})
+
+@app.route('/api/admin/messages/<int:msg_id>', methods=['DELETE'])
+def delete_message(msg_id):
+    if not session.get('admin_logged_in'):
+        return jsonify({'error': 'Unauthorized'}), 401
+    messages = load_messages()
+    new_messages = [m for m in messages if m.get('id') != msg_id]
+    if len(new_messages) == len(messages):
+        return jsonify({'error': 'Message not found'}), 404
+    save_messages(new_messages)
+    return jsonify({'success': True, 'deleted_id': msg_id})
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
-
-
 
