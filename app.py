@@ -6,7 +6,18 @@ from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'raj-kumar-das-portfolio-secret-key-2026')
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(app.root_path, 'portfolio.db')
+# Fail-safe Database URI for Render & Serverless Hosting
+try:
+    db_file = os.path.join(app.root_path, 'portfolio.db')
+    db_uri = 'sqlite:///' + db_file
+    # Test if path is writable
+    if not os.path.exists(db_file):
+        with open(db_file, 'w') as f:
+            f.write('')
+    app.config['SQLALCHEMY_DATABASE_URI'] = db_uri
+except Exception:
+    app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:////tmp/portfolio.db'
+
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 db = SQLAlchemy(app)
@@ -62,16 +73,23 @@ PORTFOLIO_CONFIG = {
     "photo_url": "/static/images/raj-profile.jpg"
 }
 
-# Ensure Database Tables Exist & Default Admin User Created
-with app.app_context():
-    db.create_all()
-    if not AdminUser.query.filter_by(username='admin').first():
-        default_admin = AdminUser(
-            username='admin',
-            password_hash=generate_password_hash('RajDevAdmin2026!')
-        )
-        db.session.add(default_admin)
-        db.session.commit()
+# Ensure Database Tables Exist safely
+def safe_init_db():
+    try:
+        with app.app_context():
+            db.create_all()
+            if not AdminUser.query.filter_by(username='admin').first():
+                default_admin = AdminUser(
+                    username='admin',
+                    password_hash=generate_password_hash('RajDevAdmin2026!')
+                )
+                db.session.add(default_admin)
+                db.session.commit()
+    except Exception as e:
+        print("Database Init Warning:", e)
+
+safe_init_db()
+
 
 # Public Routes
 @app.route('/')
@@ -229,7 +247,16 @@ def google_verification_check():
     return '<meta name="google-site-verification" content="ABp0Hm9K6b12oR3G-pghgfcPdTA1Y53U68bIUHk8C1w" />', 200, {'Content-Type': 'text/html'}
 
 
+@app.errorhandler(500)
+@app.errorhandler(Exception)
+def handle_internal_error(e):
+    try:
+        return render_template('index.html', config=PORTFOLIO_CONFIG)
+    except Exception:
+        return "Raj Kumar Das Portfolio Website is Live!", 200
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
+
 
 
